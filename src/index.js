@@ -22,7 +22,7 @@ function usuarioPublico(u) {
 app.get('/health', async (req, res) => {
   try {
     await pool.query('SELECT 1');
-    res.json({ status: 'ok', servicio: 'auth', db: 'ok' });
+    res.json({ status: 'ok', servicio: 'auth', db: 'ok' , version: '2.0.0-demo'});
   } catch (err) {
     log.error(`Health: sin conexión a la BD: ${err.message}`);
     res.status(503).json({ status: 'error', servicio: 'auth', db: 'sin conexión' });
