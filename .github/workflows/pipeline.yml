@@ -1,0 +1,104 @@
+name: CI/CD Pipeline - Auth Service
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-auth-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Pruebas y Linting
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Ejecutar pruebas / validación de sintaxis
+        run: |
+          node -c src/index.js
+          echo "Pruebas completadas exitosamente."
+
+  build:
+    name: Construir Artefacto
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout del repositorio
+        uses: actions/checkout@v4
+
+      - name: Empaquetar artefacto
+        run: |
+          mkdir -p dist
+          tar --exclude='./dist' --exclude='./.git' --exclude='./node_modules' -czf dist/auth-service.tar.gz .
+          echo "Artefacto auth-service.tar.gz generado en dist/"
+
+      - name: Subir artefacto a GitHub Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: auth-service-artifact
+          path: dist/auth-service.tar.gz
+          retention-days: 7
+
+  deploy:
+    name: Desplegar en EC2 AWS
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar artefacto
+        uses: actions/download-artifact@v4
+        with:
+          name: auth-service-artifact
+          path: ./dist
+
+      - name: Configurar llave SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Copiar artefacto a EC2 via SCP
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+        run: |
+          scp -o StrictHostKeyChecking=no ./dist/auth-service.tar.gz $USER@$HOST:/tmp/auth-service.tar.gz
+
+      - name: Ejecutar despliegue en EC2 via SSH
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+        run: |
+          ssh -o StrictHostKeyChecking=no $USER@$HOST << 'EOF'
+            set -e
+            echo "Desempaquetando auth-service..."
+            TARGET_DIR="$HOME/entradas-ya/auth"
+            mkdir -p "$TARGET_DIR"
+            tar -xzf /tmp/auth-service.tar.gz -C "$TARGET_DIR"
+            rm -f /tmp/auth-service.tar.gz
+
+            cd "$TARGET_DIR"
+            npm ci --omit=dev --no-audit --no-fund
+            
+            if systemctl list-unit-files | grep -q "entradasya-auth.service"; then
+              sudo systemctl restart entradasya-auth
+              echo "Servicio entradasya-auth reiniciado."
+            fi
+            
+            echo "Despliegue de auth completado con éxito."
+          EOF
